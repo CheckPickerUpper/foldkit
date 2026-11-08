@@ -1,0 +1,5 @@
+---
+'foldkit': patch
+---
+
+Fix the DevTools bridge never answering when a Model or Message held a `bigint` or referred back to itself. The Vite HMR channel serializes every reply with `JSON.stringify`, which throws on a `bigint` and on a circular structure, and a circular value also overflowed the stack inside `toInspectableValue`. The request failed inside the bridge and the MCP client waited for a reply that was never sent. `toInspectableValue` now turns a `bigint` into `{ _summary: 'bigint', value: '5' }`, so a reader can tell the value from a string or a number. A symbol becomes `{ _summary: 'symbol', description }` and a function becomes `{ _summary: 'function', name }`, where JSON used to drop them without a trace. A value that refers back to one of its own ancestors becomes `{ _summary: 'circular' }` at the repeated reference, while an object that is only shared between two places is still serialized in full in both. The in-page inspector uses the same conversion and shows the same markers.

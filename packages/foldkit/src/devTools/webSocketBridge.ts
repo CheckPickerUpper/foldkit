@@ -66,8 +66,8 @@ import {
 
 type Hot = NonNullable<ImportMeta['hot']>
 
-const REQUEST_CHANNEL = 'foldkit:devTools:request'
-const RESPONSE_CHANNEL = 'foldkit:devTools:response'
+export const REQUEST_CHANNEL = 'foldkit:devTools:request'
+export const RESPONSE_CHANNEL = 'foldkit:devTools:response'
 
 /** HMR channel the bridge announces connection lifecycle events on. */
 export const EVENT_CHANNEL = 'foldkit:devTools:event'

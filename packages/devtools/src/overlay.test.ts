@@ -382,7 +382,7 @@ describe('DevTools payload copy', () => {
       CopyPayloadToClipboard({
         targetId: 'Model:0',
         requestId: 1,
-        payload: { count: 1n },
+        payload: undefined,
       }).effect,
     )
 
@@ -392,6 +392,31 @@ describe('DevTools payload copy', () => {
       requestId: 1,
     })
     expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('copies a bigint payload as a marked bigint', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    const result = await Effect.runPromise(
+      CopyPayloadToClipboard({
+        targetId: 'Model:0',
+        requestId: 1,
+        payload: { count: 1n },
+      }).effect,
+    )
+
+    expect(result).toEqual({
+      _tag: 'SucceededCopyPayloadToClipboard',
+      targetId: 'Model:0',
+      requestId: 1,
+    })
+    expect(writeText).toHaveBeenCalledWith(
+      JSON.stringify({ count: { _summary: 'bigint', value: '1' } }, null, 2),
+    )
   })
 
   it('returns a failure Message when clipboard access is denied', async () => {

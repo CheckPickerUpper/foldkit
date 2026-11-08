@@ -18,8 +18,29 @@ import { extractSubmodelInfo } from './submodelPath.js'
 
 const inspectableCache = new WeakMap<object, unknown>()
 
+// The objects on the path from the root to the value being converted. A value
+// that appears on its own path is circular. A value that appears twice on
+// different paths is shared, and converts in full both times.
+const ancestors = new Set<object>()
+
+// Counts the circular markers placed so far, so a conversion can tell whether
+// its own subtree held one.
+let circularMarkersPlaced = 0
+
 const computeInspectableValue = (value: unknown): unknown =>
   Match.value(value).pipe(
+    Match.when(Predicate.isBigInt, bigint => ({
+      _summary: 'bigint',
+      value: bigint.toString(),
+    })),
+    Match.when(Predicate.isSymbol, symbol => ({
+      _summary: 'symbol',
+      description: String(symbol),
+    })),
+    Match.when(Predicate.isFunction, fn => ({
+      _summary: 'function',
+      name: fn.name,
+    })),
     Match.when(Redacted.isRedacted, globalThis.String),
     Match.when(Match.instanceOf(File), file => ({
       name: file.name,
@@ -33,8 +54,12 @@ const computeInspectableValue = (value: unknown): unknown =>
     })),
     Match.when(Match.instanceOf(Date), date => date.toISOString()),
     Match.when(Match.instanceOf(URL), ({ href }) => href),
-    Match.when(globalThis.Array.isArray, Array.map(toInspectableValue)),
-    Match.when(Predicate.isObject, Record.map(toInspectableValue)),
+    Match.when(globalThis.Array.isArray, items =>
+      Array.map(items, item => toInspectableValue(item)),
+    ),
+    Match.when(Predicate.isObject, record =>
+      Record.map(record, child => toInspectableValue(child)),
+    ),
     Match.orElse(Function.identity),
   )
 
@@ -46,6 +71,18 @@ const computeInspectableValue = (value: unknown): unknown =>
  * is invisible to `Object.keys`. Recurses through arrays and records so
  * the transform applies at every level. File is matched before Blob
  * because File extends Blob.
+ *
+ * Values JSON cannot carry become `{ _summary, ... }` markers that name what
+ * they were: a `bigint` is `{ _summary: 'bigint', value: '5' }`, a symbol is
+ * `{ _summary: 'symbol', description }` and a function is
+ * `{ _summary: 'function', name }`. `JSON.stringify` throws on a `bigint` and
+ * silently drops the other two, so the marker keeps the value distinguishable
+ * from a string or a missing field on the wire.
+ *
+ * A value that refers back to one of its own ancestors becomes
+ * `{ _summary: 'circular' }` at the repeated reference, so a circular Model or
+ * Message converts instead of overflowing the stack. An object reachable by two
+ * different paths is not circular and converts in full along both.
  *
  * Memoized by reference. The transform allocates fresh wrappers via
  * `Array.map` / `Record.map` even when the input contains no DOM classes
@@ -59,14 +96,28 @@ const computeInspectableValue = (value: unknown): unknown =>
  */
 export const toInspectableValue = (value: unknown): unknown => {
   if (value === null || typeof value !== 'object') {
-    return value
+    return computeInspectableValue(value)
+  }
+  if (ancestors.has(value)) {
+    circularMarkersPlaced += 1
+    return { _summary: 'circular' }
   }
   if (inspectableCache.has(value)) {
     return inspectableCache.get(value)
   }
-  const result = computeInspectableValue(value)
-  inspectableCache.set(value, result)
-  return result
+  const markersBefore = circularMarkersPlaced
+  ancestors.add(value)
+  try {
+    const result = computeInspectableValue(value)
+    // A subtree holding a marker depends on the path it was reached by, so it
+    // is not memoized.
+    if (circularMarkersPlaced === markersBefore) {
+      inspectableCache.set(value, result)
+    }
+    return result
+  } finally {
+    ancestors.delete(value)
+  }
 }
 
 /**

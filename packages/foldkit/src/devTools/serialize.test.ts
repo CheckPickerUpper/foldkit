@@ -40,6 +40,54 @@ describe('toInspectableValue', () => {
     })
   })
 
+  it('marks a bigint so a reader can tell it from a string or a number', () => {
+    expect(toInspectableValue(5n)).toEqual({ _summary: 'bigint', value: '5' })
+    expect(toInspectableValue({ total: 9007199254740993n })).toEqual({
+      total: { _summary: 'bigint', value: '9007199254740993' },
+    })
+    expect(toInspectableValue([1n])).toEqual([
+      { _summary: 'bigint', value: '1' },
+    ])
+  })
+
+  it('marks a symbol and a function instead of letting JSON drop them', () => {
+    expect(toInspectableValue({ id: Symbol('row') })).toEqual({
+      id: { _summary: 'symbol', description: 'Symbol(row)' },
+    })
+    const refresh = () => undefined
+    expect(toInspectableValue({ refresh })).toEqual({
+      refresh: { _summary: 'function', name: 'refresh' },
+    })
+  })
+
+  it('puts a circular marker where a value refers back to an ancestor', () => {
+    const parent: Record<string, unknown> = { name: 'parent' }
+    parent['children'] = [{ name: 'child', parent }]
+    expect(toInspectableValue(parent)).toEqual({
+      name: 'parent',
+      children: [{ name: 'child', parent: { _summary: 'circular' } }],
+    })
+  })
+
+  it('serializes an object fully when it is shared but not circular', () => {
+    const address = { city: 'Lisbon' }
+    expect(toInspectableValue({ home: address, work: address })).toEqual({
+      home: { city: 'Lisbon' },
+      work: { city: 'Lisbon' },
+    })
+  })
+
+  it('answers the same for a shared object whether or not a circular value was read first', () => {
+    const left: Record<string, unknown> = { id: 'left' }
+    const right = { id: 'right', left }
+    left['right'] = right
+    toInspectableValue(left)
+    expect(toInspectableValue(right)).toEqual({
+      id: 'right',
+      left: { id: 'left', right: { _summary: 'circular' } },
+    })
+  })
+
   it('recurses into arrays', () => {
     const date = new Date('2026-01-01T00:00:00.000Z')
     expect(toInspectableValue([1, date, 'a'])).toEqual([
@@ -134,6 +182,27 @@ describe('toSerializedEntry', () => {
     ])
     expect(result.timestamp).toBe(1700000000000)
     expect(result.isModelChanged).toBe(true)
+  })
+
+  it('marks a bigint in the Message body', () => {
+    const result = toSerializedEntry(
+      { ...baseEntry, message: { _tag: 'GotTotal', total: 5n } },
+      0,
+    )
+    expect(result.message).toEqual({
+      _tag: 'GotTotal',
+      total: { _summary: 'bigint', value: '5' },
+    })
+  })
+
+  it('puts a circular marker where the Message body refers back to itself', () => {
+    const message: Record<string, unknown> = { _tag: 'GotNode' }
+    message['self'] = message
+    const result = toSerializedEntry({ ...baseEntry, message }, 0)
+    expect(result.message).toEqual({
+      _tag: 'GotNode',
+      self: { _summary: 'circular' },
+    })
   })
 
   it('serializes Command args alongside the name', () => {

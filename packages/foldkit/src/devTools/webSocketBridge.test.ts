@@ -14,14 +14,23 @@ import { describe, expect, it } from 'vitest'
 
 import { defineMessageUnion } from '../message/index.js'
 import { modifyFields } from '../struct/index.js'
-import { EventFrame, MAX_DISPATCH_BATCH_SIZE, Request } from './protocol.js'
+import {
+  EventFrame,
+  MAX_DISPATCH_BATCH_SIZE,
+  Request,
+  RequestFrame,
+  ResponseFrame,
+} from './protocol.js'
 import {
   type Bridge,
   type CreateDevToolsStoreOptions,
+  type DevToolsStore,
   createDevToolsStore,
 } from './store.js'
 import {
   EVENT_CHANNEL,
+  REQUEST_CHANNEL,
+  RESPONSE_CHANNEL,
   dispatchRequest,
   startWebSocketBridge,
 } from './webSocketBridge.js'
@@ -575,5 +584,144 @@ describe('startWebSocketBridge', () => {
     dispatchPageShow(true)
 
     expect(sentEventTags).toEqual(['EventConnected', 'EventDisconnected'])
+  })
+})
+
+// NOTE: Vite's `hot.send` serializes the payload with `JSON.stringify`, which
+// throws on a `bigint` and on a circular structure. The stub does the same so
+// a value the wire cannot carry fails here as it does in the browser.
+describe('startWebSocketBridge with values JSON cannot carry', () => {
+  const askBridge = (
+    prepare: (store: DevToolsStore) => void,
+    request: Request,
+  ): ReadonlyArray<ResponseFrame> => {
+    const responses: Array<unknown> = []
+    let requestHandler: (frame: unknown) => void = Function.constVoid
+    let connectionId = ''
+
+    const hot: NonNullable<ImportMeta['hot']> = {
+      data: {},
+      accept: Function.constVoid,
+      acceptExports: Function.constVoid,
+      dispose: Function.constVoid,
+      prune: Function.constVoid,
+      invalidate: Function.constVoid,
+      on: (channel: string, handler: (frame: any) => void) => {
+        if (channel === REQUEST_CHANNEL) {
+          requestHandler = handler
+        }
+      },
+      off: Function.constVoid,
+      send: (channel: string, payload: unknown) => {
+        const wire = JSON.stringify(payload)
+        if (channel === EVENT_CHANNEL) {
+          connectionId = Option.getOrElse(
+            Schema.decodeUnknownSync(EventFrame)(JSON.parse(wire))
+              .maybeConnectionId,
+            () => '',
+          )
+        }
+        if (channel === RESPONSE_CHANNEL) {
+          responses.push(JSON.parse(wire))
+        }
+      },
+    }
+
+    const store = run(createDevToolsStore(makeBridge()))
+    prepare(store)
+    const scope = run(Scope.make())
+    run(
+      Effect.provideService(
+        startWebSocketBridge(store, hot, () => Effect.void, Option.none()),
+        Scope.Scope,
+        scope,
+      ),
+    )
+    requestHandler(
+      Schema.encodeSync(RequestFrame)({
+        id: 'req-1',
+        maybeConnectionId: Option.some(connectionId),
+        request,
+      }),
+    )
+    run(Scope.close(scope, Exit.void))
+    return Array.map(responses, response =>
+      Schema.decodeUnknownSync(ResponseFrame)(response),
+    )
+  }
+
+  const askForModel = (model: unknown): ReadonlyArray<ResponseFrame> =>
+    askBridge(
+      store => run(store.recordInit(model, [])),
+      Request.RequestGetModel({ maybePath: Option.none(), expand: true }),
+    )
+
+  const askForMessages = (message: {
+    _tag: string
+    [field: string]: unknown
+  }): ReadonlyArray<ResponseFrame> =>
+    askBridge(
+      store => {
+        run(store.recordInit({ count: 0 }, []))
+        run(store.recordMessage(message, { count: 0 }, { count: 1 }, [], true))
+      },
+      Request.RequestListMessages({
+        limit: 10,
+        maybeSinceIndex: Option.none(),
+        maybeChangedPathsMatch: Option.none(),
+        fromEnd: false,
+      }),
+    )
+
+  it('answers a Model read with the bigint marked as a bigint', () => {
+    const [frame] = askForModel({ total: 5n })
+    expect(frame?.response).toMatchObject({
+      _tag: 'ResponseModel',
+      value: { total: { _summary: 'bigint', value: '5' } },
+    })
+  })
+
+  it('answers a Message list with the bigint in a Message marked as a bigint', () => {
+    const [frame] = askForMessages({ _tag: 'GotTotal', total: 5n })
+    expect(frame?.response).toMatchObject({
+      _tag: 'ResponseMessages',
+      entries: [
+        {
+          message: {
+            _tag: 'GotTotal',
+            total: { _summary: 'bigint', value: '5' },
+          },
+        },
+      ],
+    })
+  })
+
+  it('answers a Model read with a marker where the Model refers back to itself', () => {
+    const model: Record<string, unknown> = { name: 'root' }
+    model['self'] = model
+    const [frame] = askForModel(model)
+    expect(frame?.response).toMatchObject({
+      _tag: 'ResponseModel',
+      value: { name: 'root', self: { _summary: 'circular' } },
+    })
+  })
+
+  it('answers a Message list with a marker where a Message refers back to itself', () => {
+    const message: { _tag: string; [field: string]: unknown } = {
+      _tag: 'GotNode',
+    }
+    message['node'] = { parent: message }
+    const [frame] = askForMessages(message)
+    expect(frame?.response).toMatchObject({
+      _tag: 'ResponseMessages',
+      entries: [
+        {
+          message: {
+            _tag: 'GotNode',
+            node: { parent: { _summary: 'circular' } },
+          },
+        },
+      ],
+    })
   })
 })
