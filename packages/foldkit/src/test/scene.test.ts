@@ -5031,6 +5031,47 @@ describe('scene mounts', () => {
     }).toThrow(/MeasurePanel/)
   })
 
+  describe('an expectEnded step shared between scenes', () => {
+    const openModel = modifyFields(mountInitialModel, { isOpen: () => true })
+
+    const closeMeasurePanelScene = (
+      acknowledgeEndedMeasurePanel: ReturnType<typeof Scene.Mount.expectEnded>,
+    ) =>
+      Scene.scene(
+        { update: mountUpdate, view: mountView },
+        Scene.given(openModel),
+        Scene.Mount.resolve(
+          MeasurePanel,
+          MountPanelMessage.MeasuredPanel({ width: 400 }),
+        ),
+        acknowledgeFocusButton,
+        Scene.click(Scene.role('button')),
+        acknowledgeEndedMeasurePanel,
+        Scene.Mount.expectNone(),
+      )
+
+    test('acknowledges the ended Mount in the second scene too', () => {
+      const acknowledgeEndedMeasurePanel = Scene.Mount.expectEnded(MeasurePanel)
+
+      closeMeasurePanelScene(acknowledgeEndedMeasurePanel)
+      closeMeasurePanelScene(acknowledgeEndedMeasurePanel)
+    })
+
+    test('still throws in a later scene where the Mount has not unmounted', () => {
+      const acknowledgeEndedMeasurePanel = Scene.Mount.expectEnded(MeasurePanel)
+
+      closeMeasurePanelScene(acknowledgeEndedMeasurePanel)
+
+      expect(() => {
+        Scene.scene(
+          { update: mountUpdate, view: mountView },
+          Scene.given(mountInitialModel),
+          acknowledgeEndedMeasurePanel,
+        )
+      }).toThrow(/some haven't unmounted:\n\n {4}MeasurePanel\n/)
+    })
+  })
+
   test('an interaction throws when a previous unmount was not acknowledged', () => {
     const openModel = modifyFields(mountInitialModel, { isOpen: () => true })
     expect(() => {

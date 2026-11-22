@@ -1201,24 +1201,32 @@ const expectEndedMountsStep =
   ): SceneSimulation<Model, Message, OutMessage> => {
     /* eslint-disable @typescript-eslint/consistent-type-assertions */
     const internal = toInternal(simulation)
-    const remaining: Array<MountMatcher> = Array.fromIterable(matchers)
-    const updatedSlots: Array<MountSlotState> = []
-    for (const state of internal.mountSlots) {
-      const maybeMatchIndex = Array.findFirstIndex(
-        remaining,
-        matcher =>
-          state.status._tag === 'Ended' &&
-          !state.status.acknowledged &&
-          mountMatches(matcher, state.slot),
-      )
-      Option.match(maybeMatchIndex, {
-        onNone: () => updatedSlots.push(state),
-        onSome: matchIndex => {
-          remaining.splice(matchIndex, 1)
-          updatedSlots.push({ slot: state.slot, status: ENDED_ACKNOWLEDGED })
-        },
-      })
-    }
+
+    // NOTE: the returned step can run in more than one scene, so it reads
+    // `matchers` and never writes to it. Each acknowledgement removes its
+    // matcher with `Array.remove`, which returns a new array.
+    const [remaining, updatedSlots] = Array.mapAccum(
+      internal.mountSlots,
+      matchers,
+      (unacknowledged, state): [ReadonlyArray<MountMatcher>, MountSlotState] =>
+        Option.match(
+          Array.findFirstIndex(
+            unacknowledged,
+            matcher =>
+              state.status._tag === 'Ended' &&
+              !state.status.acknowledged &&
+              mountMatches(matcher, state.slot),
+          ),
+          {
+            onNone: () => [unacknowledged, state],
+            onSome: matchIndex => [
+              Array.remove(unacknowledged, matchIndex),
+              { slot: state.slot, status: ENDED_ACKNOWLEDGED },
+            ],
+          },
+        ),
+    )
+
     if (Array.isReadonlyArrayNonEmpty(remaining)) {
       throw new Error(
         `I tried to acknowledge ended Mounts but some haven't unmounted:\n\n` +
